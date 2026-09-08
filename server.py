@@ -32,13 +32,11 @@ async def upload_model(file: UploadFile = File(...)):
     if ext not in ['.glb', '.gltf', '.obj', '.stl']:
         return {"success": False, "error": f"File type '{ext[1:]}' not supported"}
 
-    # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp:
         temp.write(await file.read())
         temp_path = temp.name
 
     try:
-        # Save file permanently into static/output so the frontend can load it via URL
         unique_name = f"{uuid.uuid4()}{ext}"
         dest_path = os.path.join("static", "output", unique_name)
         
@@ -46,7 +44,6 @@ async def upload_model(file: UploadFile = File(...)):
             with open(temp_path, "rb") as src:
                 dest.write(src.read())
 
-        # Load mesh via trimesh to extract stats
         mesh = trimesh.load(dest_path, force='mesh')
         
         stats = {
@@ -69,12 +66,8 @@ async def upload_model(file: UploadFile = File(...)):
 
 @app.post("/voxelize")
 async def voxelize_model(data: dict):
-    """
-    Takes the model URL, loads it, voxelizes the mesh into a 3D grid,
-    and returns the voxel coordinates for Minecraft generation.
-    """
     model_url = data.get("model_url")
-    resolution = data.get("resolution", 32) # Default grid size (e.g., 32x32x32 blocks)
+    resolution = int(data.get("resolution", 32))
     
     if not model_url:
         return {"success": False, "error": "No model URL provided."}
@@ -84,25 +77,67 @@ async def voxelize_model(data: dict):
         return {"success": False, "error": "Model file not found on server."}
 
     try:
-        # Load the mesh
         mesh = trimesh.load(file_path, force='mesh')
         
-        # Scale/pitch the voxel grid resolution 
+        # Force conversion of visual materials to vertex/face colors if possible
+        if hasattr(mesh.visual, 'to_color'):
+            try:
+                mesh.visual = mesh.visual.to_color()
+            except Exception as e:
+                print("Visual to_color conversion note:", e)
+
         to_voxel = mesh.voxelized(pitch=mesh.extents.max() / resolution)
-        
-        # Get the matrix of filled voxels
         matrix = to_voxel.matrix
         
-        # Extract coordinates of all active voxels
-        voxel_coords = []
         indices = np.argwhere(matrix)
-        
-        for idx in indices:
-            voxel_coords.append({
+        if len(indices) == 0:
+            return {"success": False, "error": "Voxel grid is empty. Try a lower resolution or different model."}
+
+        # Get voxel center coordinates
+        if hasattr(to_voxel, 'points') and len(to_voxel.points) == len(indices):
+            centers = to_voxel.points
+        else:
+            pitch = to_voxel.pitch
+            transform = to_voxel.transform
+            centers = (indices * pitch) @ transform[:3, :3].T + transform[:3, 3]
+
+        colors = None
+        has_colors = False
+
+        try:
+            # Check for direct vertex colors
+            if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+                vertex_colors = mesh.visual.vertex_colors[:, :3]
+                _, _, face_ids = mesh.nearest.on_surface(centers)
+                tri_vertices = mesh.faces[face_ids]
+                colors = np.mean(vertex_colors[tri_vertices], axis=1)
+                has_colors = True
+
+            # Check for face colors if vertex colors aren't present
+            elif hasattr(mesh.visual, 'face_colors') and mesh.visual.face_colors is not None:
+                face_colors = mesh.visual.face_colors[:, :3]
+                _, _, face_ids = mesh.nearest.on_surface(centers)
+                colors = face_colors[face_ids]
+                has_colors = True
+                
+        except Exception as col_err:
+            print("Color mapping error details:", col_err)
+
+        voxel_coords = []
+        for i, idx in enumerate(indices):
+            voxel_item = {
                 "x": int(idx[0]),
                 "y": int(idx[1]),
                 "z": int(idx[2])
-            })
+            }
+            if has_colors and colors is not None and i < len(colors):
+                c = colors[i]
+                voxel_item["color"] = [int(c[0]), int(c[1]), int(c[2])]
+            else:
+                # Neutral stone/grey fallback tone
+                voxel_item["color"] = [120, 120, 120] 
+            
+            voxel_coords.append(voxel_item)
 
         return {
             "success": True, 
