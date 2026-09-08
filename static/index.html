@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D to Minecraft Voxel Converter</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js and Loaders -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-6">
+
+    <header class="mb-8 text-center">
+        <h1 class="text-4xl font-bold tracking-wider text-emerald-400">🧊 3D to Minecraft Voxel Converter</h1>
+        <p class="text-gray-400 mt-2">Upload your .glb, .obj, or .stl model to preview and convert it.</p>
+    </header>
+
+    <div class="w-full max-w-4xl bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+        <!-- Upload Form -->
+        <div class="mb-6 flex flex-col sm:flex-row items-center gap-4">
+            <input type="file" id="fileInput" accept=".glb,.obj,.stl" class="block w-full text-sm text-gray-400
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-md file:border-0
+                file:text-sm file:font-semibold
+                file:bg-emerald-600 file:text-white
+                hover:file:bg-emerald-500 cursor-pointer"/>
+            <button onclick="uploadAndPreview()" class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 font-semibold px-6 py-2 rounded-md transition">
+                Upload & Analyze
+            </button>
+        </div>
+
+        <!-- Metadata Stats Panel -->
+        <div id="statsPanel" class="hidden mb-6 p-4 bg-gray-900 rounded-lg border border-gray-700 text-sm">
+            <h3 class="font-bold text-emerald-400 mb-2">📊 Model Metadata:</h3>
+            <div id="statsContent" class="grid grid-cols-2 gap-2 text-gray-300"></div>
+        </div>
+
+        <!-- 3D Viewport Canvas Container -->
+        <div class="relative w-full h-[450px] bg-black rounded-lg overflow-hidden border border-gray-700">
+            <div id="canvas-container" class="w-full h-full"></div>
+            <div id="loading" class="absolute inset-0 bg-black/70 flex items-center justify-center text-emerald-400 font-semibold hidden">
+                Loading 3D Model & Colors...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, controls, currentMesh;
+
+        function initViewer() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111827);
+
+            camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera.position.set(0, 50, 100);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(10, 20, 15);
+            scene.add(directionalLight);
+
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+
+        async function uploadAndPreview() {
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput.files.length === 0) {
+                alert("Please select a file first!");
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append("file", file);
+
+            document.getElementById('loading').classList.remove('hidden');
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    displayStats(result.data);
+
+                    if (currentMesh) scene.remove(currentMesh);
+
+                    // Load GLB using GLTFLoader to preserve original textures/colors
+                    const loader = new THREE.GLTFLoader();
+                    loader.load(result.data.model_url, function (gltf) {
+                        currentMesh = gltf.scene;
+                        
+                        // Center and scale model
+                        const box = new THREE.Box3().setFromObject(currentMesh);
+                        const center = box.getCenter(new THREE.Vector3());
+                        currentMesh.position.sub(center);
+
+                        scene.add(currentMesh);
+                        document.getElementById('loading').classList.add('hidden');
+                    }, undefined, function (error) {
+                        console.error(error);
+                        alert("Error loading GLB file into viewer.");
+                        document.getElementById('loading').classList.add('hidden');
+                    });
+
+                } else {
+                    alert("Error: " + result.error);
+                    document.getElementById('loading').classList.add('hidden');
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Failed to connect to the backend server.");
+                document.getElementById('loading').classList.add('hidden');
+            }
+        }
+
+        function displayStats(data) {
+            const panel = document.getElementById('statsPanel');
+            const content = document.getElementById('statsContent');
+            panel.classList.remove('hidden');
+
+            content.innerHTML = `
+                <div><strong>File:</strong> ${data.filename}</div>
+                <div><strong>Vertices:</strong> ${data.vertices}</div>
+                <div><strong>Faces:</strong> ${data.faces}</div>
+                <div><strong>Watertight:</strong> ${data.is_watertight ? 'Yes ✅' : 'No ⚠️'}</div>
+            `;
+        }
+
+        window.onload = initViewer;
+    </script>
+</body>
+</html>
