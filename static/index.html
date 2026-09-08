@@ -27,8 +27,20 @@
                 file:text-sm file:font-semibold
                 file:bg-emerald-600 file:text-white
                 hover:file:bg-emerald-500 cursor-pointer"/>
-            <button onclick="uploadAndPreview()" class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 font-semibold px-6 py-2 rounded-md transition">
+            <button onclick="uploadAndPreview()" class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 font-semibold px-6 py-2 rounded-md transition whitespace-nowrap">
                 Upload & Analyze
+            </button>
+        </div>
+
+        <!-- Controls for Voxelization (Hidden until upload succeeds) -->
+        <div id="voxelControls" class="hidden mb-6 p-4 bg-gray-900 rounded-lg border border-gray-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-3 w-full sm:w-auto">
+                <label for="resolutionRange" class="text-sm font-medium text-gray-300">Resolution:</label>
+                <input type="range" id="resolutionRange" min="16" max="64" value="32" step="8" class="accent-emerald-500 cursor-pointer" oninput="document.getElementById('resValue').innerText = this.value">
+                <span id="resValue" class="text-emerald-400 font-bold w-8">32</span>
+            </div>
+            <button onclick="convertToVoxels()" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 font-semibold px-6 py-2 rounded-md transition whitespace-nowrap">
+                Convert to Voxels 🧱
             </button>
         </div>
 
@@ -42,13 +54,14 @@
         <div class="relative w-full h-[450px] bg-black rounded-lg overflow-hidden border border-gray-700">
             <div id="canvas-container" class="w-full h-full"></div>
             <div id="loading" class="absolute inset-0 bg-black/70 flex items-center justify-center text-emerald-400 font-semibold hidden">
-                Loading 3D Model & Colors...
+                Processing 3D Model...
             </div>
         </div>
     </div>
 
     <script>
         let scene, camera, renderer, controls, currentMesh;
+        let currentModelUrl = null;
 
         function initViewer() {
             const container = document.getElementById('canvas-container');
@@ -102,16 +115,16 @@
                 const result = await response.json();
 
                 if (result.success) {
+                    currentModelUrl = result.data.model_url;
                     displayStats(result.data);
+                    document.getElementById('voxelControls').classList.remove('hidden');
 
                     if (currentMesh) scene.remove(currentMesh);
 
-                    // Load GLB using GLTFLoader to preserve original textures/colors
                     const loader = new THREE.GLTFLoader();
-                    loader.load(result.data.model_url, function (gltf) {
+                    loader.load(currentModelUrl, function (gltf) {
                         currentMesh = gltf.scene;
                         
-                        // Center and scale model
                         const box = new THREE.Box3().setFromObject(currentMesh);
                         const center = box.getCenter(new THREE.Vector3());
                         currentMesh.position.sub(center);
@@ -132,6 +145,64 @@
                 console.error(err);
                 alert("Failed to connect to the backend server.");
                 document.getElementById('loading').classList.add('hidden');
+            }
+        }
+
+        async function convertToVoxels() {
+            if (!currentModelUrl) {
+                alert("Please upload a model first!");
+                return;
+            }
+
+            const resolution = parseInt(document.getElementById('resolutionRange').value);
+            document.getElementById('loading').innerText = "Voxelizing Mesh into Blocks...";
+            document.getElementById('loading').classList.remove('hidden');
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/voxelize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_url: currentModelUrl, resolution: resolution })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    if (currentMesh) scene.remove(currentMesh);
+
+                    // Render voxels as instanced or grouped cubes
+                    const voxelGroup = new THREE.Group();
+                    const geometry = new THREE.BoxGeometry(1, 1, 1);
+                    const material = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.3 });
+
+                    // Find center offset to align grid
+                    let sumX = 0, sumY = 0, sumZ = 0;
+                    result.voxels.forEach(v => {
+                        sumX += v.x; sumY += v.y; sumZ += v.z;
+                    });
+                    const cx = sumX / result.voxels.length;
+                    const cy = sumY / result.voxels.length;
+                    const cz = sumZ / result.voxels.length;
+
+                    // Use InstancedMesh for performance if voxel count is high
+                    result.voxels.forEach(v => {
+                        const mesh = new THREE.Mesh(geometry, material);
+                        mesh.position.set(v.x - cx, v.y - cy, v.z - cz);
+                        voxelGroup.add(mesh);
+                    });
+
+                    currentMesh = voxelGroup;
+                    scene.add(currentMesh);
+
+                    alert(`Successfully converted model into ${result.total_voxels} voxels!`);
+                } else {
+                    alert("Voxelization error: " + result.error);
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Failed to communicate with voxelization backend.");
+            } finally {
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('loading').innerText = "Loading 3D Model & Colors...";
             }
         }
 
