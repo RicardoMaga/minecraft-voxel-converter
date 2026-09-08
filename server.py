@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import trimesh
+import numpy as np
 import tempfile
 import os
 import uuid
@@ -65,6 +66,52 @@ async def upload_model(file: UploadFile = File(...)):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+@app.post("/voxelize")
+async def voxelize_model(data: dict):
+    """
+    Takes the model URL, loads it, voxelizes the mesh into a 3D grid,
+    and returns the voxel coordinates for Minecraft generation.
+    """
+    model_url = data.get("model_url")
+    resolution = data.get("resolution", 32) # Default grid size (e.g., 32x32x32 blocks)
+    
+    if not model_url:
+        return {"success": False, "error": "No model URL provided."}
+    
+    file_path = os.path.join(".", model_url.lstrip("/"))
+    if not os.path.exists(file_path):
+        return {"success": False, "error": "Model file not found on server."}
+
+    try:
+        # Load the mesh
+        mesh = trimesh.load(file_path, force='mesh')
+        
+        # Scale/pitch the voxel grid resolution 
+        to_voxel = mesh.voxelized(pitch=mesh.extents.max() / resolution)
+        
+        # Get the matrix of filled voxels
+        matrix = to_voxel.matrix
+        
+        # Extract coordinates of all active voxels
+        voxel_coords = []
+        indices = np.argwhere(matrix)
+        
+        for idx in indices:
+            voxel_coords.append({
+                "x": int(idx[0]),
+                "y": int(idx[1]),
+                "z": int(idx[2])
+            })
+
+        return {
+            "success": True, 
+            "total_voxels": len(voxel_coords),
+            "voxels": voxel_coords
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
